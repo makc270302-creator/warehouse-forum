@@ -31,6 +31,7 @@ type AdminProfile = {
   status: "active" | "inactive";
   department: string | null;
   position: string | null;
+  password_plain?: string | null;
 };
 
 type AdminPost = {
@@ -98,7 +99,7 @@ function matchesFilter(profile: AdminProfile, searchParams?: SearchParams) {
   const query = (searchParams?.q || "").trim().toLowerCase();
   const roleFilter = searchParams?.role_filter || "all";
   const statusFilter = searchParams?.status_filter || "all";
-  const haystack = [profile.username, profile.full_name, profile.department, profile.position].filter(Boolean).join(" ").toLowerCase();
+  const haystack = [profile.username, profile.full_name, profile.department, profile.position, profile.password_plain].filter(Boolean).join(" ").toLowerCase();
 
   return (!query || haystack.includes(query)) && (roleFilter === "all" || profile.role === roleFilter) && (statusFilter === "all" || profile.status === statusFilter);
 }
@@ -121,7 +122,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Searc
 
   const { data: profiles } = await supabase
     .from("profiles")
-    .select("id,username,full_name,role,status,department,position")
+    .select("*")
     .order("created_at", { ascending: false });
 
   const { data: posts } = await supabase
@@ -207,6 +208,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Searc
                   <p className="mt-1 truncate text-xs text-steel">
                     {[profile.department, profile.position].filter(Boolean).join(" · ") || "Профиль не заполнен"}
                   </p>
+                  <p className="mt-1 truncate text-xs font-semibold text-coral">Пароль: {profile.password_plain || "не сохранён"}</p>
                 </div>
                 <select className="focus-ring h-10 rounded-md border border-line px-3 text-sm" defaultValue={profile.role} name="role">
                   <option value="employee">{roleLabel.employee}</option>

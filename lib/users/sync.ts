@@ -413,14 +413,28 @@ export async function syncUsers(rows: UserImportRow[], options: UserSyncOptions 
       createdUser = true;
     }
 
-    const { error: upsertError } = await admin.from("profiles").upsert({
+    const profilePayload: {
+      id: string;
+      username: string;
+      full_name: string;
+      position: string | null;
+      role: UserRole;
+      status: UserStatus;
+      password_plain?: string;
+    } = {
       id: userId,
       username: row.username,
       full_name: row.fullName,
       position: row.position,
       role: row.role,
       status: row.status
-    });
+    };
+
+    if (row.password) {
+      profilePayload.password_plain = row.password;
+    }
+
+    const { error: upsertError } = await admin.from("profiles").upsert(profilePayload);
 
     if (upsertError) {
       result.errors.push(`${row.username}: ${upsertError.message}`);

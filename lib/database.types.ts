@@ -16,6 +16,7 @@ export type Database = {
           status: UserStatus;
           department: string | null;
           position: string | null;
+          password_plain: string | null;
           phone: string | null;
           avatar_url: string | null;
           created_at: string;
@@ -29,6 +30,7 @@ export type Database = {
           status?: UserStatus;
           department?: string | null;
           position?: string | null;
+          password_plain?: string | null;
           phone?: string | null;
           avatar_url?: string | null;
           created_at?: string;
