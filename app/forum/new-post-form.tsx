@@ -8,7 +8,6 @@ import type { PostType, Priority, UserRole } from "@/lib/database.types";
 
 export function NewPostForm({ userId, role }: { userId: string; role: UserRole }) {
   const router = useRouter();
-  const supabase = createBrowserSupabaseClient();
   const canPublishOperations = role === "shift_lead" || role === "admin";
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -21,6 +20,16 @@ export function NewPostForm({ userId, role }: { userId: string; role: UserRole }
     event.preventDefault();
     setError("");
     setLoading(true);
+
+    let supabase: ReturnType<typeof createBrowserSupabaseClient>;
+
+    try {
+      supabase = createBrowserSupabaseClient();
+    } catch {
+      setLoading(false);
+      setError("Сайт не подключен к Supabase. Проверьте переменные окружения в Vercel и сделайте Redeploy.");
+      return;
+    }
 
     const { error: insertError } = await supabase.from("posts").insert({
       author_id: userId,

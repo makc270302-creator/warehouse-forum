@@ -9,7 +9,6 @@ import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 export function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const supabase = createBrowserSupabaseClient();
   const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -19,6 +18,16 @@ export function LoginForm() {
     event.preventDefault();
     setError("");
     setLoading(true);
+
+    let supabase: ReturnType<typeof createBrowserSupabaseClient>;
+
+    try {
+      supabase = createBrowserSupabaseClient();
+    } catch {
+      setLoading(false);
+      setError("Сайт не подключен к Supabase. Проверьте переменные окружения в Vercel и сделайте Redeploy.");
+      return;
+    }
 
     const { error: signInError } = await supabase.auth.signInWithPassword({ email: loginToEmail(login), password });
 

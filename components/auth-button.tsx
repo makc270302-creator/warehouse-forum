@@ -6,9 +6,17 @@ import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 
 export function AuthButton() {
   const router = useRouter();
-  const supabase = createBrowserSupabaseClient();
 
   async function signOut() {
+    let supabase: ReturnType<typeof createBrowserSupabaseClient>;
+
+    try {
+      supabase = createBrowserSupabaseClient();
+    } catch {
+      router.replace("/login");
+      return;
+    }
+
     await supabase.auth.signOut();
     router.replace("/login");
     router.refresh();
