@@ -1,7 +1,10 @@
 "use server";
 
-import type { PostType, Priority, UserRole } from "@/lib/database.types";
-import { createServerActionSupabaseClient } from "@/lib/supabase/server";
+import { revalidatePath } from "next/cache";
+import { getCurrentUser } from "@/lib/auth/session";
+import { writeAuditLog } from "@/lib/audit";
+import { query } from "@/lib/db";
+import type { PostType, Priority } from "@/lib/database.types";
 
 type CreatePostInput = {
   title: string;
@@ -14,23 +17,13 @@ export type CreatePostResult = { ok: true } | { ok: false; error: string };
 
 export async function createPostAction(input: CreatePostInput): Promise<CreatePostResult> {
   try {
-    const supabase = createServerActionSupabaseClient();
-    const {
-      data: { user }
-    } = await supabase.auth.getUser();
+    const user = await getCurrentUser();
 
     if (!user) {
       return { ok: false, error: "Сессия истекла. Войдите в систему снова." };
     }
 
-    const { data: profile } = await supabase.from("profiles").select("role,status").eq("id", user.id).single();
-
-    if (!profile || profile.status !== "active") {
-      return { ok: false, error: "Учетная запись неактивна или не найдена." };
-    }
-
-    const role = profile.role as UserRole;
-    const canPublishOperations = role === "shift_lead" || role === "admin";
+    const canPublishOperations = user.role === "shift_lead" || user.role === "admin";
     const title = input.title.trim();
     const body = input.body.trim();
     const allowedTypes: PostType[] = canPublishOperations
@@ -40,25 +33,22 @@ export async function createPostAction(input: CreatePostInput): Promise<CreatePo
       ? ["normal", "important", "critical"]
       : ["normal", "important"];
 
-    if (!title || title.length > 120 || !body || !allowedTypes.includes(input.type) || !allowedPriorities.includes(input.priority)) {
+    if (title.length < 3 || title.length > 120 || body.length < 3 || body.length > 8000 || !allowedTypes.includes(input.type) || !allowedPriorities.includes(input.priority)) {
       return { ok: false, error: "Проверьте заполнение темы и права на выбранный тип публикации." };
     }
 
-    const { error } = await supabase.from("posts").insert({
-      author_id: user.id,
-      title,
-      body,
-      type: input.type,
-      priority: input.priority,
-      is_pinned: false
-    });
+    const created = await query<{ id: string }>(
+      `insert into posts (author_id, title, body, type, priority, is_pinned)
+       values ($1, $2, $3, $4, $5, false) returning id`,
+      [user.id, title, body, input.type, input.priority]
+    );
 
-    if (error) {
-      return { ok: false, error: "Не удалось создать тему. Попробуйте ещё раз." };
-    }
-
+    await writeAuditLog("post.create", user.id, "post", created.rows[0]?.id, { type: input.type, priority: input.priority });
+    revalidatePath("/forum");
+    revalidatePath("/dashboard");
     return { ok: true };
-  } catch {
+  } catch (error) {
+    console.error("Create post failed", error);
     return { ok: false, error: "Сервер временно недоступен. Попробуйте ещё раз." };
   }
 }

@@ -1,18 +1,22 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { Pin, Search, ShieldCheck, TableProperties, Trash2, UsersRound } from "lucide-react";
+import { FileText, Pin, Search, ShieldCheck, TableProperties, Trash2, Upload, UsersRound } from "lucide-react";
 import {
   checkGoogleUsers,
   createAdminPost,
+  createUser,
+  deleteDocument,
   deletePost,
   importUsersFromTable,
   syncUsersFromGoogleWithOptions,
   togglePostPin,
-  updateUserRole
+  updateUserRole,
+  uploadDocument
 } from "@/app/admin/actions";
 import { PortalShell } from "@/components/portal-shell";
 import { StatusPill } from "@/components/status-pill";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getCurrentUser } from "@/lib/auth/session";
+import { query } from "@/lib/db";
 import type { Priority, UserRole } from "@/lib/database.types";
 
 export const dynamic = "force-dynamic";
@@ -31,7 +35,6 @@ type AdminProfile = {
   status: "active" | "inactive";
   department: string | null;
   position: string | null;
-  password_plain?: string | null;
 };
 
 type AdminPost = {
@@ -53,6 +56,20 @@ type SyncLog = {
   skipped_count: number;
   password_updated_count: number;
   error_count: number;
+  created_at: string;
+};
+
+type AdminDocument = {
+  id: string;
+  title: string;
+  original_name: string | null;
+  size_bytes: string | null;
+};
+
+type AuditLog = {
+  id: string;
+  action: string;
+  actor_name: string | null;
   created_at: string;
 };
 
@@ -81,8 +98,9 @@ type SearchParams = {
   status_filter?: string;
 };
 
-function getSyncReport() {
-  const raw = cookies().get("admin_user_sync_report")?.value;
+async function getSyncReport() {
+  const cookieStore = await cookies();
+  const raw = cookieStore.get("admin_user_sync_report")?.value;
 
   if (!raw) {
     return null;
@@ -99,54 +117,46 @@ function matchesFilter(profile: AdminProfile, searchParams?: SearchParams) {
   const query = (searchParams?.q || "").trim().toLowerCase();
   const roleFilter = searchParams?.role_filter || "all";
   const statusFilter = searchParams?.status_filter || "all";
-  const haystack = [profile.username, profile.full_name, profile.department, profile.position, profile.password_plain].filter(Boolean).join(" ").toLowerCase();
+  const haystack = [profile.username, profile.full_name, profile.department, profile.position].filter(Boolean).join(" ").toLowerCase();
 
   return (!query || haystack.includes(query)) && (roleFilter === "all" || profile.role === roleFilter) && (statusFilter === "all" || profile.status === statusFilter);
 }
 
 export default async function AdminPage({ searchParams }: { searchParams?: SearchParams }) {
-  const supabase = createServerSupabaseClient();
-  const {
-    data: { user }
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
 
   if (!user) {
     redirect("/login?next=/admin");
   }
 
-  const { data: currentProfile } = await supabase.from("profiles").select("full_name, role, status").eq("id", user.id).single();
-
-  if (currentProfile?.status === "inactive" || currentProfile?.role !== "admin") {
+  if (user.role !== "admin") {
     redirect("/dashboard");
   }
 
-  const { data: profiles } = await supabase
-    .from("profiles")
-    .select("*")
-    .order("created_at", { ascending: false });
-
-  const { data: posts } = await supabase
-    .from("posts")
-    .select("id,title,body,type,priority,is_pinned")
-    .order("is_pinned", { ascending: false })
-    .order("created_at", { ascending: false })
-    .limit(20);
-
-  const { data: syncLogs } = await supabase
-    .from("sync_logs")
-    .select("id,source,triggered_by,created_count,updated_count,deactivated_count,skipped_count,password_updated_count,error_count,created_at")
-    .order("created_at", { ascending: false })
-    .limit(5);
-
-  const allProfiles = (profiles || []) as AdminProfile[];
+  const [profilesResult, postsResult, syncLogsResult, documentsResult, auditLogsResult] = await Promise.all([
+    query<AdminProfile>("select id,username,full_name,role,status,department,position from users order by created_at desc"),
+    query<AdminPost>("select id,title,body,type,priority,is_pinned from posts order by is_pinned desc, created_at desc limit 20"),
+    query<SyncLog>(`select id,source,triggered_by,created_count,updated_count,deactivated_count,skipped_count,
+                           password_updated_count,error_count,created_at
+                      from sync_logs order by created_at desc limit 5`),
+    query<AdminDocument>("select id,title,original_name,size_bytes::text from documents order by created_at desc limit 10"),
+    query<AuditLog>(`select a.id::text, a.action, u.full_name as actor_name, a.created_at
+                       from audit_logs a left join users u on u.id=a.actor_id
+                      order by a.created_at desc limit 20`)
+  ]);
+  const allProfiles = profilesResult.rows;
+  const posts = postsResult.rows;
+  const syncLogs = syncLogsResult.rows;
+  const documents = documentsResult.rows;
+  const auditLogs = auditLogsResult.rows;
   const visibleProfiles = allProfiles.filter((profile) => matchesFilter(profile, searchParams));
   const activeCount = allProfiles.filter((profile) => profile.status === "active").length;
   const adminCount = allProfiles.filter((profile) => profile.role === "admin").length;
-  const report = getSyncReport();
+  const report = await getSyncReport();
 
   return (
     <PortalShell
-      profileName={currentProfile?.full_name || user.email || ""}
+      profileName={user.full_name}
       role="admin"
       subtitle="Пользователи, роли, синхронизация, объявления и модерация форума."
       title="Админ-панель"
@@ -198,7 +208,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Searc
             {visibleProfiles.map((profile) => (
               <form
                 action={updateUserRole}
-                className="grid gap-3 rounded-md border border-line p-3 sm:grid-cols-[1fr_150px_130px_120px] sm:items-center"
+                className="grid gap-3 rounded-md border border-line p-3 sm:grid-cols-[1fr_140px_120px_170px_110px] sm:items-center"
                 key={profile.id}
               >
                 <input name="user_id" type="hidden" value={profile.id} />
@@ -208,7 +218,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Searc
                   <p className="mt-1 truncate text-xs text-steel">
                     {[profile.department, profile.position].filter(Boolean).join(" · ") || "Профиль не заполнен"}
                   </p>
-                  <p className="mt-1 truncate text-xs font-semibold text-coral">Пароль: {profile.password_plain || "не сохранён"}</p>
+                  <p className="mt-1 truncate text-xs font-semibold text-steel">Пароль хранится только в защищённом виде</p>
                 </div>
                 <select className="focus-ring h-10 rounded-md border border-line px-3 text-sm" defaultValue={profile.role} name="role">
                   <option value="employee">{roleLabel.employee}</option>
@@ -219,6 +229,14 @@ export default async function AdminPage({ searchParams }: { searchParams?: Searc
                   <option value="active">Активен</option>
                   <option value="inactive">Отключен</option>
                 </select>
+                <input
+                  autoComplete="new-password"
+                  className="focus-ring h-10 rounded-md border border-line px-3 text-sm"
+                  minLength={8}
+                  name="new_password"
+                  placeholder="Новый пароль"
+                  type="password"
+                />
                 <button className="focus-ring h-10 rounded-md bg-ink px-3 text-sm font-bold text-white hover:bg-steel" type="submit">
                   Сохранить
                 </button>
@@ -232,12 +250,31 @@ export default async function AdminPage({ searchParams }: { searchParams?: Searc
         </div>
 
         <div className="grid gap-4">
+          <form action={createUser} className="rounded-md border border-line bg-white p-4 shadow-sm">
+            <div className="mb-4 flex items-center gap-2">
+              <UsersRound className="text-mint" size={20} />
+              <h2 className="text-lg font-bold text-ink">Новый сотрудник</h2>
+            </div>
+            <div className="grid gap-3">
+              <input className="focus-ring h-10 rounded-md border border-line px-3 text-sm" name="username" pattern="[a-z0-9._-]{3,64}" placeholder="Логин" required />
+              <input className="focus-ring h-10 rounded-md border border-line px-3 text-sm" name="full_name" placeholder="ФИО" required />
+              <input className="focus-ring h-10 rounded-md border border-line px-3 text-sm" name="position" placeholder="Должность" />
+              <select className="focus-ring h-10 rounded-md border border-line px-3 text-sm" defaultValue="employee" name="role">
+                <option value="employee">Сотрудник</option>
+                <option value="shift_lead">Модератор</option>
+                <option value="admin">Администратор</option>
+              </select>
+              <input autoComplete="new-password" className="focus-ring h-10 rounded-md border border-line px-3 text-sm" minLength={8} name="password" placeholder="Временный пароль" required type="password" />
+              <button className="focus-ring h-10 rounded-md bg-mint px-3 text-sm font-bold text-white hover:bg-coral" type="submit">Создать сотрудника</button>
+            </div>
+          </form>
+
           <form action={syncUsersFromGoogleWithOptions} className="rounded-md border border-line bg-white p-4 shadow-sm">
             <div className="mb-4 flex items-center gap-2">
               <TableProperties className="text-mint" size={20} />
               <h2 className="text-lg font-bold text-ink">Google Sheets</h2>
             </div>
-            <p className="text-sm leading-6 text-steel">Синхронизация читает опубликованный CSV или подключенную Google таблицу и обновляет пользователей в Supabase.</p>
+            <p className="text-sm leading-6 text-steel">Синхронизация читает опубликованный CSV или подключенную Google таблицу и обновляет пользователей портала.</p>
 
             <div className="mt-4 grid gap-2">
               <label className="flex items-start gap-2 text-sm font-semibold text-ink">
@@ -330,7 +367,49 @@ export default async function AdminPage({ searchParams }: { searchParams?: Searc
             </button>
           </form>
 
-          {syncLogs?.length ? <SyncLogList logs={syncLogs as SyncLog[]} /> : null}
+          <section className="rounded-md border border-line bg-white p-4 shadow-sm">
+            <div className="mb-4 flex items-center gap-2">
+              <FileText className="text-mint" size={20} />
+              <h2 className="text-lg font-bold text-ink">Документы</h2>
+            </div>
+
+            <form action={uploadDocument} className="grid gap-3">
+              <input className="focus-ring h-10 rounded-md border border-line px-3 text-sm" maxLength={160} name="title" placeholder="Название документа" required />
+              <textarea className="focus-ring min-h-20 rounded-md border border-line p-3 text-sm" name="description" placeholder="Краткое описание" />
+              <input
+                accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png"
+                className="focus-ring rounded-md border border-line p-2 text-sm"
+                name="file"
+                required
+                type="file"
+              />
+              <p className="text-xs text-steel">PDF, Word, Excel или изображение, не более 20 МБ.</p>
+              <button className="focus-ring inline-flex h-10 items-center justify-center gap-2 rounded-md bg-ink px-3 text-sm font-bold text-white hover:bg-steel" type="submit">
+                <Upload size={16} /> Загрузить
+              </button>
+            </form>
+
+            {documents.length ? (
+              <div className="mt-4 grid gap-2 border-t border-line pt-4">
+                {documents.map((document) => (
+                  <div className="flex items-center justify-between gap-3 rounded-md border border-line p-3" key={document.id}>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-bold text-ink">{document.title}</p>
+                      <p className="truncate text-xs text-steel">{document.original_name || "Файл"}</p>
+                    </div>
+                    <form action={deleteDocument}>
+                      <input name="document_id" type="hidden" value={document.id} />
+                      <button className="focus-ring inline-flex h-9 w-9 items-center justify-center rounded-md border border-coral/40 text-coral hover:bg-coral/10" title="Удалить документ" type="submit">
+                        <Trash2 size={15} />
+                      </button>
+                    </form>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </section>
+
+          {syncLogs.length ? <SyncLogList logs={syncLogs} /> : null}
         </div>
       </section>
 
@@ -341,7 +420,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Searc
         </div>
 
         <div className="grid gap-3">
-          {((posts || []) as AdminPost[]).map((post) => (
+          {posts.map((post) => (
             <article className="rounded-md border border-line p-3" key={post.id}>
               <div className="flex flex-wrap items-center gap-2">
                 <StatusPill priority={post.priority} />
@@ -369,6 +448,24 @@ export default async function AdminPage({ searchParams }: { searchParams?: Searc
               </div>
             </article>
           ))}
+        </div>
+      </section>
+
+      <section className="mt-6 rounded-md border border-line bg-white p-4 shadow-sm">
+        <div className="mb-4 flex items-center gap-2">
+          <ShieldCheck className="text-mint" size={20} />
+          <h2 className="text-lg font-bold text-ink">Журнал действий</h2>
+        </div>
+        <div className="grid gap-2">
+          {auditLogs.length ? auditLogs.map((log) => (
+            <article className="flex flex-col justify-between gap-1 rounded-md border border-line p-3 sm:flex-row sm:items-center" key={log.id}>
+              <div>
+                <p className="text-sm font-bold text-ink">{log.action}</p>
+                <p className="text-xs text-steel">{log.actor_name || "Система"}</p>
+              </div>
+              <time className="text-xs font-semibold text-steel">{new Date(log.created_at).toLocaleString("ru-RU")}</time>
+            </article>
+          )) : <p className="text-sm text-steel">Записей пока нет.</p>}
         </div>
       </section>
     </PortalShell>

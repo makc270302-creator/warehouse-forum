@@ -2,7 +2,8 @@ import { AlertTriangle, FileText, MessageCircle, Pin } from "lucide-react";
 import { redirect } from "next/navigation";
 import { PortalShell } from "@/components/portal-shell";
 import { StatusPill } from "@/components/status-pill";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getCurrentUser } from "@/lib/auth/session";
+import { query } from "@/lib/db";
 import type { Priority } from "@/lib/database.types";
 
 export const dynamic = "force-dynamic";
@@ -33,36 +34,24 @@ const demoPosts = [
 ];
 
 export default async function DashboardPage() {
-  const supabase = createServerSupabaseClient();
-  const {
-    data: { user }
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
 
-  let profile: { full_name: string; role: string; status: string; department: string | null } | null = null;
-
-  if (user) {
-    const { data } = await supabase.from("profiles").select("full_name, role, status, department").eq("id", user.id).single();
-    profile = data;
-  }
-
-  if (profile?.status === "inactive") {
+  if (!user) {
     redirect("/login");
   }
 
-  const { data: posts } = await supabase
-    .from("posts")
-    .select("id,title,body,priority,is_pinned,created_at")
-    .order("is_pinned", { ascending: false })
-    .order("created_at", { ascending: false })
-    .limit(6);
-
-  const visiblePosts: DashboardPost[] = posts?.length ? (posts as DashboardPost[]) : demoPosts;
-  const profileName = (profile as { full_name: string } | null)?.full_name || user?.email || "";
+  const [postsResult, documentsResult] = await Promise.all([
+    query<DashboardPost>("select id,title,body,priority,is_pinned from posts order by is_pinned desc, created_at desc limit 6"),
+    query<{ count: string }>("select count(*)::text as count from documents")
+  ]);
+  const posts = postsResult.rows;
+  const visiblePosts: DashboardPost[] = posts.length ? posts : demoPosts;
+  const documentCount = Number(documentsResult.rows[0]?.count || 0);
 
   return (
     <PortalShell
-      profileName={profileName}
-      role={profile?.role === "admin" ? "admin" : undefined}
+      profileName={user.full_name}
+      role={user.role}
       subtitle="Главные объявления, быстрый доступ к обсуждениям и документам."
       title="Сводка склада"
     >
@@ -86,7 +75,7 @@ export default async function DashboardPage() {
             <span className="text-sm font-semibold text-steel">Документы</span>
             <FileText size={18} className="text-mint" />
           </div>
-          <p className="mt-3 text-3xl font-bold text-ink">0</p>
+          <p className="mt-3 text-3xl font-bold text-ink">{documentCount}</p>
         </div>
       </section>
 
@@ -103,10 +92,10 @@ export default async function DashboardPage() {
         ))}
       </section>
 
-      {!posts?.length ? (
+      {!posts.length ? (
         <div className="mt-5 flex items-start gap-3 rounded-md border border-amber/30 bg-amber/10 p-4 text-sm leading-6 text-steel">
           <AlertTriangle className="mt-0.5 shrink-0 text-amber" size={18} />
-          После подключения Supabase здесь появятся реальные объявления из базы.
+          Пока используются демонстрационные объявления. Опубликуйте первую запись в форуме.
         </div>
       ) : null}
     </PortalShell>

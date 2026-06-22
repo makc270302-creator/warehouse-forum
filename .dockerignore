@@ -1,0 +1,9 @@
+.git
+.next
+node_modules
+.env*
+!.env.production.example
+npm-debug.log*
+server.log
+backups
+uploads

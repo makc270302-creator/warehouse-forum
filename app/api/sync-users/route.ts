@@ -11,9 +11,8 @@ function isAuthorized(request: Request) {
     return false;
   }
 
-  const url = new URL(request.url);
   const bearer = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
-  return bearer === secret || bearer === cronSecret || url.searchParams.get("secret") === secret;
+  return bearer === secret || bearer === cronSecret;
 }
 
 async function sync(request: Request) {

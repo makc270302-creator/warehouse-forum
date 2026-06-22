@@ -1,8 +1,7 @@
 import { ShieldCheck, UserRound } from "lucide-react";
 import { redirect } from "next/navigation";
 import { PortalShell } from "@/components/portal-shell";
-import type { Database } from "@/lib/database.types";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getCurrentUser } from "@/lib/auth/session";
 
 export const dynamic = "force-dynamic";
 
@@ -13,27 +12,16 @@ const roleLabel = {
 };
 
 export default async function ProfilePage() {
-  const supabase = createServerSupabaseClient();
-  const {
-    data: { user }
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
 
-  let profile: Database["public"]["Tables"]["profiles"]["Row"] | null = null;
-
-  if (user) {
-    const { data } = await supabase.from("profiles").select("*").eq("id", user.id).single();
-    profile = data;
-  }
-
-  if (profile?.status === "inactive") {
+  if (!user) {
     redirect("/login");
   }
-  const profileName = (profile as { full_name: string } | null)?.full_name || user?.email || "";
 
   return (
     <PortalShell
-      profileName={profileName}
-      role={profile?.role}
+      profileName={user.full_name}
+      role={user.role}
       subtitle="Данные учетной записи и роль доступа."
       title="Профиль"
     >
@@ -43,8 +31,8 @@ export default async function ProfilePage() {
             <UserRound size={30} />
           </div>
           <div className="min-w-0">
-            <h2 className="truncate text-xl font-bold text-ink">{profile?.full_name || user?.email}</h2>
-            <p className="mt-1 text-sm text-steel">{user?.email}</p>
+            <h2 className="truncate text-xl font-bold text-ink">{user.full_name}</h2>
+            <p className="mt-1 text-sm text-steel">Логин: {user.username}</p>
           </div>
         </div>
 
@@ -53,20 +41,20 @@ export default async function ProfilePage() {
             <dt className="text-sm font-semibold text-steel">Роль</dt>
             <dd className="mt-2 flex items-center gap-2 text-base font-bold text-ink">
               <ShieldCheck size={18} className="text-mint" />
-              {profile?.role ? roleLabel[profile.role] : "Не назначена"}
+              {roleLabel[user.role]}
             </dd>
           </div>
           <div className="rounded-md border border-line p-4">
             <dt className="text-sm font-semibold text-steel">Отдел</dt>
-            <dd className="mt-2 text-base font-bold text-ink">{profile?.department || "Не указан"}</dd>
+            <dd className="mt-2 text-base font-bold text-ink">{user.department || "Не указан"}</dd>
           </div>
           <div className="rounded-md border border-line p-4">
             <dt className="text-sm font-semibold text-steel">Должность</dt>
-            <dd className="mt-2 text-base font-bold text-ink">{profile?.position || "Не указана"}</dd>
+            <dd className="mt-2 text-base font-bold text-ink">{user.position || "Не указана"}</dd>
           </div>
           <div className="rounded-md border border-line p-4">
             <dt className="text-sm font-semibold text-steel">Телефон</dt>
-            <dd className="mt-2 text-base font-bold text-ink">{profile?.phone || "Не указан"}</dd>
+            <dd className="mt-2 text-base font-bold text-ink">{user.phone || "Не указан"}</dd>
           </div>
         </dl>
       </section>

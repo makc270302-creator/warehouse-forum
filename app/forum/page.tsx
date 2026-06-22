@@ -4,7 +4,8 @@ import { NewPostForm } from "@/app/forum/new-post-form";
 import { PortalShell } from "@/components/portal-shell";
 import { StatusPill } from "@/components/status-pill";
 import type { UserRole } from "@/lib/database.types";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getCurrentUser } from "@/lib/auth/session";
+import { query } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -18,43 +19,27 @@ type ForumPost = {
 };
 
 export default async function ForumPage() {
-  const supabase = createServerSupabaseClient();
-  const {
-    data: { user }
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
 
-  let profile: { full_name: string; role: UserRole; status: string } | null = null;
-
-  if (user) {
-    const { data } = await supabase.from("profiles").select("full_name, role, status").eq("id", user.id).single();
-    profile = data;
-  }
-
-  if (profile?.status === "inactive") {
+  if (!user) {
     redirect("/login");
   }
 
-  const { data: posts } = await supabase
-    .from("posts")
-    .select("id,title,body,type,priority,is_pinned,created_at")
-    .order("is_pinned", { ascending: false })
-    .order("created_at", { ascending: false });
-
-  const profileName = (profile as { full_name: string } | null)?.full_name || user?.email || "";
-  const role = (profile as { role: UserRole } | null)?.role || "employee";
+  const posts = (await query<ForumPost>("select id,title,body,type,priority,is_pinned from posts order by is_pinned desc, created_at desc")).rows;
+  const role = user.role as UserRole;
 
   return (
     <PortalShell
-      profileName={profileName}
+      profileName={user.full_name}
       role={role}
       subtitle="Темы для модераторов, сотрудников и администраторов склада."
       title="Форум"
     >
-      {user ? <NewPostForm role={role} /> : null}
+      <NewPostForm role={role} />
 
       <section className="mt-6 grid gap-4">
-        {posts?.length ? (
-          (posts as ForumPost[]).map((post) => (
+        {posts.length ? (
+          posts.map((post) => (
             <article className="rounded-md border border-line bg-white p-4 shadow-sm" key={post.id}>
               <div className="flex flex-wrap items-center gap-2">
                 {post.is_pinned ? <Pin size={16} className="text-mint" /> : null}

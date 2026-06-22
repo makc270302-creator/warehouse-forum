@@ -1,134 +1,100 @@
 # Warehouse Forum
 
-Корпоративный портал склада на Next.js, Supabase и Vercel.
+Корпоративный портал склада для размещения на российском VPS. Проект рассчитан на 250+ сотрудников и не зависит от Supabase или Vercel.
 
-## Стек
+## Архитектура
 
-- Frontend: Next.js + TypeScript + Tailwind CSS
-- Backend: Supabase PostgreSQL + Row Level Security
-- Авторизация: Supabase Auth
-- Файлы: Supabase Storage
-- Деплой: Vercel
-- Код: GitHub
+- Next.js 14 и TypeScript;
+- PostgreSQL 16;
+- собственная авторизация с HttpOnly-сессиями;
+- пароли в виде хэшей `scrypt`, без хранения исходных паролей;
+- роли `employee`, `shift_lead`, `admin`;
+- файлы в отдельном Docker volume;
+- журнал значимых действий;
+- Caddy с автоматическим HTTPS;
+- ежедневные резервные копии PostgreSQL;
+- Docker Compose для запуска и обновлений.
 
-## Локальный запуск
+## Подготовка VPS
 
-1. Установите Node.js 20 LTS или новее.
-2. Установите зависимости:
+Рекомендуемая ОС — Ubuntu 24.04 LTS. Для первой версии достаточно 4 vCPU, 8 ГБ RAM и 100 ГБ SSD.
+
+1. Установите Git и Docker Engine с Compose plugin.
+2. Направьте A-запись домена на публичный IP сервера.
+3. Откройте входящие TCP-порты 22, 80 и 443. Порт PostgreSQL наружу открывать не нужно.
+4. Клонируйте приватный репозиторий:
 
 ```bash
-npm install
+git clone https://github.com/makc270302-creator/warehouse-forum.git
+cd warehouse-forum
 ```
 
-## Google Sheets user sync
+5. Создайте боевые настройки:
 
-Таблица пользователей должна иметь колонки:
+```bash
+cp .env.production.example .env.production
+nano .env.production
+chmod 600 .env.production
+```
+
+Укажите домен и три разные длинные случайные строки: `POSTGRES_PASSWORD`, `BOOTSTRAP_ADMIN_PASSWORD`, `USER_SYNC_SECRET`.
+
+6. Запустите портал:
+
+```bash
+docker compose --env-file .env.production up -d --build
+docker compose --env-file .env.production ps
+```
+
+7. Откройте домен и войдите с `BOOTSTRAP_ADMIN_LOGIN` / `BOOTSTRAP_ADMIN_PASSWORD`. При первом входе администратор будет создан автоматически.
+
+После первого входа измените bootstrap-пароль в `.env.production`: он больше не используется, если администратор уже существует.
+
+## Обновление
+
+```bash
+sh ops/deploy.sh
+```
+
+Скрипт получает изменения из GitHub, собирает приложение и безопасно перезапускает контейнеры.
+
+## Пользователи
+
+В админ-панели поддерживается ручной импорт строк формата:
 
 ```text
 Логин / ФИО / Должность / Роль / Состояние / Пароль
 ```
 
-Для синхронизации через закрытую Google таблицу:
+Пароль должен содержать минимум 8 символов. После импорта в PostgreSQL сохраняется только его криптографический хэш.
 
-1. Создайте Google Cloud service account.
-2. Скопируйте email service account и дайте ему доступ на чтение к таблице.
-3. Добавьте в `.env.local`:
+Для закрытой Google-таблицы задайте переменные `GOOGLE_SHEETS_*`. Для опубликованного CSV достаточно `GOOGLE_SHEETS_CSV_URL`. Автоматическую синхронизацию можно вызвать так:
 
 ```bash
-GOOGLE_SHEETS_SPREADSHEET_ID=spreadsheet-id-from-url
-GOOGLE_SHEETS_RANGE=Users!A:F
-GOOGLE_SERVICE_ACCOUNT_EMAIL=sync-bot@project.iam.gserviceaccount.com
-GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
-USER_SYNC_SECRET=random-long-secret
+curl -H "Authorization: Bearer USER_SYNC_SECRET" https://portal.example.ru/api/sync-users
 ```
 
-Синхронизацию можно запустить кнопкой в `/admin` или запросом:
+## Документы
+
+Администратор загружает PDF, Word, Excel и изображения размером до 20 МБ. Файлы хранятся в volume `uploads_data` и выдаются только авторизованным сотрудникам.
+
+## Резервные копии
+
+Контейнер `backup` ежедневно создаёт сжатый дамп в каталоге `./backups`. По умолчанию хранятся копии за 14 дней. Каталог резервных копий необходимо дополнительно копировать на другой сервер или в российское S3-хранилище.
+
+Проверка:
 
 ```bash
-curl -H "Authorization: Bearer random-long-secret" https://your-domain/api/sync-users
+ls -lh backups
+docker compose --env-file .env.production logs backup
 ```
 
-Если таблица опубликована как CSV, можно вместо service account указать только:
+## Локальная разработка
 
 ```bash
-GOOGLE_SHEETS_CSV_URL=https://docs.google.com/spreadsheets/d/e/.../pub?output=csv
-```
-
-3. Создайте `.env.local` по примеру `.env.example`:
-
-```bash
-NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=your-publishable-key
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-```
-
-4. Запустите проект:
-
-```bash
+npm ci
+cp .env.example .env.local
 npm run dev
 ```
 
-Если нет прав администратора, можно использовать portable Node.js в папке `%USERPROFILE%\Tools\nodejs`.
-Для этого в проект добавлены команды:
-
-```bat
-install.cmd
-dev.cmd
-build.cmd
-```
-
-## Настройка Supabase
-
-1. Создайте новый проект в Supabase.
-2. Откройте SQL Editor.
-3. Выполните файл `supabase/migrations/001_initial_schema.sql`.
-4. Если база уже была создана раньше, дополнительно выполните `supabase/migrations/002_usernames_and_import.sql`.
-5. В Auth включите вход по email/password.
-6. Создайте первого пользователя вручную в Auth или через админ-панель Supabase.
-7. Для первого администратора обновите роль в таблице `profiles`:
-
-```sql
-update public.profiles
-set role = 'admin', full_name = 'Администратор', username = 'admin'
-where id = 'USER_UUID';
-```
-
-## Деплой на Vercel
-
-1. Создайте приватный репозиторий на GitHub.
-2. Загрузите туда проект.
-3. Подключите репозиторий в Vercel.
-4. В Vercel добавьте переменные окружения:
-
-```bash
-NEXT_PUBLIC_SUPABASE_URL
-NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
-SUPABASE_SERVICE_ROLE_KEY
-```
-
-5. Запустите первый деплой.
-
-## Первый MVP
-
-Уже заложены:
-
-- вход через Supabase Auth;
-- защищенные страницы;
-- роли `employee`, `shift_lead`, `admin`;
-- сводка склада;
-- форум с созданием тем;
-- раздел документов под Supabase Storage;
-- профиль пользователя;
-- админ-панель `/admin` для ролей, объявлений и модерации;
-- импорт сотрудников из Google Sheets через вставку таблицы `Логин / ФИО / Должность / Роль / Состояние / Пароль`;
-- RLS-политики для базовой безопасности.
-
-Обычные сотрудники могут создавать обсуждения. Объявления, закрепление, документы и управление ролями оставлены для модераторов/администраторов.
-
-Роли при импорте из Google Sheets:
-
-```text
-Админ      -> admin
-Модератор  -> shift_lead
-Сотрудник  -> employee
-```
+Локально потребуется PostgreSQL с применённым файлом `database/init.sql`.

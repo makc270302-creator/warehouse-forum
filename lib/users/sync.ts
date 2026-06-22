@@ -1,6 +1,7 @@
 import { createSign } from "crypto";
-import { loginToEmail, normalizeLogin } from "@/lib/auth/login";
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { normalizeLogin } from "@/lib/auth/login";
+import { hashPassword } from "@/lib/auth/password";
+import { query } from "@/lib/db";
 import type { UserRole, UserStatus } from "@/lib/database.types";
 
 type UserImportRow = {
@@ -280,58 +281,45 @@ export async function fetchUsersFromGoogleSheet() {
 }
 
 async function deactivateMissingUsers(sourceRows: UserImportRow[], result: UserSyncResult) {
-  const admin = createSupabaseAdminClient();
-  const sourceUsernames = new Set(sourceRows.map((row) => row.username));
-  const { data: activeProfiles, error } = await admin.from("profiles").select("id,username,role,status").eq("status", "active");
-
-  if (error) {
-    result.errors.push(`deactivate missing: ${error.message}`);
-    return;
-  }
-
-  for (const profile of activeProfiles || []) {
-    const username = normalizeLogin(profile.username || "");
-
-    if (!username || sourceUsernames.has(username) || profile.role === "admin") {
-      continue;
-    }
-
-    const { error: updateError } = await admin.from("profiles").update({ status: "inactive" }).eq("id", profile.id);
-
-    if (updateError) {
-      result.errors.push(`${username}: ${updateError.message}`);
-      continue;
-    }
-
-    result.deactivated += 1;
-  }
+  const sourceUsernames = sourceRows.map((row) => row.username);
+  const updated = await query<{ id: string }>(
+    `update users set status = 'inactive'
+      where status = 'active' and role <> 'admin' and not (lower(username) = any($1::text[]))
+      returning id`,
+    [sourceUsernames]
+  );
+  result.deactivated += updated.rowCount || 0;
 }
 
 export async function logUserSync(result: UserSyncResult, options: UserSyncOptions = {}) {
   try {
-    const admin = createSupabaseAdminClient();
-    await admin.from("sync_logs").insert({
-      source: options.source || "google",
-      triggered_by: options.triggeredBy || null,
-      created_count: result.created,
-      updated_count: result.updated,
-      deactivated_count: result.deactivated,
-      skipped_count: result.skipped,
-      password_updated_count: result.passwordUpdated,
-      error_count: result.errors.length,
-      details: {
+    await query(
+      `insert into sync_logs
+        (source, triggered_by, created_count, updated_count, deactivated_count, skipped_count,
+         password_updated_count, error_count, details)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,
+      [
+        options.source || "google",
+        options.triggeredBy || null,
+        result.created,
+        result.updated,
+        result.deactivated,
+        result.skipped,
+        result.passwordUpdated,
+        result.errors.length,
+        JSON.stringify({
         totalRows: result.totalRows,
         errors: result.errors.slice(0, 25),
         warnings: result.warnings.slice(0, 25)
-      }
-    });
+        })
+      ]
+    );
   } catch {
-    // The sync must still work before the optional sync_logs migration is applied.
+    // User synchronization remains available if optional logging fails.
   }
 }
 
 export async function syncUsers(rows: UserImportRow[], options: UserSyncOptions = {}): Promise<UserSyncResult> {
-  const admin = createSupabaseAdminClient();
   const result: UserSyncResult = {
     created: 0,
     updated: 0,
@@ -352,99 +340,42 @@ export async function syncUsers(rows: UserImportRow[], options: UserSyncOptions 
 
     seen.add(row.username);
 
-    const email = loginToEmail(row.username);
-    const { data: existingProfile, error: lookupError } = await admin.from("profiles").select("id").eq("username", row.username).maybeSingle();
+    try {
+      const existing = await query<{ id: string }>("select id from users where lower(username) = lower($1) limit 1", [row.username]);
+      const userId = existing.rows[0]?.id;
 
-    if (lookupError) {
-      result.errors.push(`${row.username}: ${lookupError.message}`);
-      continue;
-    }
-
-    let userId = existingProfile?.id;
-    let createdUser = false;
-
-    if (userId) {
-      const updatePayload: Parameters<typeof admin.auth.admin.updateUserById>[1] = {
-        email,
-        user_metadata: {
-          full_name: row.fullName,
-          username: row.username
+      if (userId) {
+        if (row.password && options.updateExistingPasswords) {
+          const passwordHash = await hashPassword(row.password);
+          await query(
+            `update users set username=$1, full_name=$2, position=$3, role=$4, status=$5, password_hash=$6 where id=$7`,
+            [row.username, row.fullName, row.position, row.role, row.status, passwordHash, userId]
+          );
+          result.passwordUpdated += 1;
+        } else {
+          await query(
+            `update users set username=$1, full_name=$2, position=$3, role=$4, status=$5 where id=$6`,
+            [row.username, row.fullName, row.position, row.role, row.status, userId]
+          );
         }
-      };
-
-      if (row.password && options.updateExistingPasswords) {
-        updatePayload.password = row.password;
-      }
-
-      const { error } = await admin.auth.admin.updateUserById(userId, updatePayload);
-
-      if (error) {
-        result.errors.push(`${row.username}: ${error.message}`);
-        continue;
-      }
-
-      if (row.password && options.updateExistingPasswords) {
-        result.passwordUpdated += 1;
-      }
-
-    } else {
-      if (!row.password) {
-        result.skipped += 1;
-        result.errors.push(`${row.username}: password is required for a new user`);
-        continue;
-      }
-
-      const { data, error } = await admin.auth.admin.createUser({
-        email,
-        password: row.password,
-        email_confirm: true,
-        user_metadata: {
-          full_name: row.fullName,
-          username: row.username
+        result.updated += 1;
+      } else {
+        if (!row.password) {
+          result.skipped += 1;
+          result.errors.push(`${row.username}: password is required for a new user`);
+          continue;
         }
-      });
 
-      if (error || !data.user) {
-        result.errors.push(`${row.username}: ${error?.message || "user was not created"}`);
-        continue;
+        const passwordHash = await hashPassword(row.password);
+        await query(
+          `insert into users (username, full_name, position, role, status, password_hash)
+           values ($1,$2,$3,$4,$5,$6)`,
+          [row.username, row.fullName, row.position, row.role, row.status, passwordHash]
+        );
+        result.created += 1;
       }
-
-      userId = data.user.id;
-      createdUser = true;
-    }
-
-    const profilePayload: {
-      id: string;
-      username: string;
-      full_name: string;
-      position: string | null;
-      role: UserRole;
-      status: UserStatus;
-      password_plain?: string;
-    } = {
-      id: userId,
-      username: row.username,
-      full_name: row.fullName,
-      position: row.position,
-      role: row.role,
-      status: row.status
-    };
-
-    if (row.password) {
-      profilePayload.password_plain = row.password;
-    }
-
-    const { error: upsertError } = await admin.from("profiles").upsert(profilePayload);
-
-    if (upsertError) {
-      result.errors.push(`${row.username}: ${upsertError.message}`);
-      continue;
-    }
-
-    if (createdUser) {
-      result.created += 1;
-    } else {
-      result.updated += 1;
+    } catch (error) {
+      result.errors.push(`${row.username}: ${error instanceof Error ? error.message : "user update failed"}`);
     }
   }
 
