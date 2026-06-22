@@ -3,8 +3,7 @@
 import { Loader2, LogIn } from "lucide-react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useState } from "react";
-import { loginToEmail } from "@/lib/auth/login";
-import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
+import { loginAction } from "@/lib/actions/auth";
 
 export function LoginForm() {
   const router = useRouter();
@@ -19,37 +18,20 @@ export function LoginForm() {
     setError("");
     setLoading(true);
 
-    let supabase: ReturnType<typeof createBrowserSupabaseClient>;
+    let result: Awaited<ReturnType<typeof loginAction>>;
 
     try {
-      supabase = createBrowserSupabaseClient();
+      result = await loginAction(login, password);
     } catch {
       setLoading(false);
-      setError("Сайт не подключен к Supabase. Проверьте переменные окружения в Vercel и сделайте Redeploy.");
+      setError("Не удалось связаться с сервером. Проверьте интернет и попробуйте ещё раз.");
       return;
     }
 
-    const { error: signInError } = await supabase.auth.signInWithPassword({ email: loginToEmail(login), password });
-
-    if (signInError) {
+    if (!result.ok) {
       setLoading(false);
-      setError("Не удалось войти. Проверьте логин и пароль.");
+      setError(result.error);
       return;
-    }
-
-    const {
-      data: { user }
-    } = await supabase.auth.getUser();
-
-    if (user) {
-      const { data: profile } = await supabase.from("profiles").select("status").eq("id", user.id).single();
-
-      if (profile?.status === "inactive") {
-        await supabase.auth.signOut();
-        setLoading(false);
-        setError("Учетная запись отключена. Обратитесь к администратору.");
-        return;
-      }
     }
 
     setLoading(false);

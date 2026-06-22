@@ -50,7 +50,7 @@ export default async function ForumPage() {
       subtitle="Темы для модераторов, сотрудников и администраторов склада."
       title="Форум"
     >
-      {user ? <NewPostForm role={role} userId={user.id} /> : null}
+      {user ? <NewPostForm role={role} /> : null}
 
       <section className="mt-6 grid gap-4">
         {posts?.length ? (

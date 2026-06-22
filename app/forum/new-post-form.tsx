@@ -3,10 +3,10 @@
 import { Send } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
+import { createPostAction } from "@/lib/actions/forum";
 import type { PostType, Priority, UserRole } from "@/lib/database.types";
 
-export function NewPostForm({ userId, role }: { userId: string; role: UserRole }) {
+export function NewPostForm({ role }: { role: UserRole }) {
   const router = useRouter();
   const canPublishOperations = role === "shift_lead" || role === "admin";
   const [title, setTitle] = useState("");
@@ -21,32 +21,23 @@ export function NewPostForm({ userId, role }: { userId: string; role: UserRole }
     setError("");
     setLoading(true);
 
-    let supabase: ReturnType<typeof createBrowserSupabaseClient>;
+    let result: Awaited<ReturnType<typeof createPostAction>>;
 
     try {
-      supabase = createBrowserSupabaseClient();
+      result = await createPostAction({ title, body, type, priority });
     } catch {
       setLoading(false);
-      setError("Сайт не подключен к Supabase. Проверьте переменные окружения в Vercel и сделайте Redeploy.");
+      setError("Не удалось связаться с сервером. Проверьте интернет и попробуйте ещё раз.");
       return;
     }
 
-    const { error: insertError } = await supabase.from("posts").insert({
-      author_id: userId,
-      title,
-      body,
-      type,
-      priority,
-      is_pinned: false
-    });
+    if (!result.ok) {
+      setLoading(false);
+      setError(result.error);
+      return;
+    }
 
     setLoading(false);
-
-    if (insertError) {
-      setError("Не удалось создать тему. Проверьте права доступа в Supabase.");
-      return;
-    }
-
     setTitle("");
     setBody("");
     setType("discussion");
